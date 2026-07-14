@@ -18,8 +18,7 @@ Browserbase setup (free tier: 100 min/month):
     3. Set them as Railway env variables (see CONFIG below)
 
 Railway env variables:
-    BROWSERBASE_API_KEY     from browserbase.com dashboard
-    BROWSERBASE_PROJECT_ID  from browserbase.com dashboard
+    BROWSERBASE_API_KEY     from browserbase.com dashboard (API key only — no project ID needed)
     NTFY_TOPIC              e.g. "omer-ticket-alert"
     TICKET_TYPES            optional, comma-separated e.g. "Regular Entrance Ticket"
     POLL_INTERVAL           optional, default 1 (seconds)
@@ -39,10 +38,9 @@ SALE_ID         = "4f4cb390559b41f49892d0a3214d067d"
 _ticket_types_env = os.environ.get("TICKET_TYPES", "")
 TICKET_TYPES = [t.strip() for t in _ticket_types_env.split(",") if t.strip()]
 
-POLL_INTERVAL          = int(os.environ.get("POLL_INTERVAL", "1"))
-NTFY_TOPIC             = os.environ.get("NTFY_TOPIC", "")
-BROWSERBASE_API_KEY    = os.environ.get("BROWSERBASE_API_KEY", "")
-BROWSERBASE_PROJECT_ID = os.environ.get("BROWSERBASE_PROJECT_ID", "")
+POLL_INTERVAL       = int(os.environ.get("POLL_INTERVAL", "1"))
+NTFY_TOPIC          = os.environ.get("NTFY_TOPIC", "")
+BROWSERBASE_API_KEY = os.environ.get("BROWSERBASE_API_KEY", "")
 
 BUY_BUTTON_SELECTORS = [
     "button:has-text('Buy')",
@@ -95,7 +93,7 @@ def create_browserbase_session() -> tuple[str, str]:
     r = requests.post(
         "https://www.browserbase.com/v1/sessions",
         headers={"X-BB-API-Key": BROWSERBASE_API_KEY},
-        json={"projectId": BROWSERBASE_PROJECT_ID},
+        json={},  # API key alone resolves the project — no projectId needed
         timeout=15,
     )
     r.raise_for_status()
@@ -130,7 +128,7 @@ def notify(message: str, live_url: str = ""):
 def run_purchase(listing_url: str):
     from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
 
-    if not BROWSERBASE_API_KEY or not BROWSERBASE_PROJECT_ID:
+    if not BROWSERBASE_API_KEY:
         log("Browserbase not configured — sending URL only.")
         notify(f"Ticket found! Open to buy: {listing_url}", listing_url)
         return
@@ -199,7 +197,7 @@ def main():
     log(f"Monitoring started. Poll interval: {POLL_INTERVAL}s")
     log(f"Ticket filter: {TICKET_TYPES or 'ANY'}")
     log(f"ntfy topic: {NTFY_TOPIC or 'NOT SET'}")
-    log(f"Browserbase: {'configured' if BROWSERBASE_API_KEY else 'NOT configured'}")
+    log(f"Browserbase: {'configured ✓' if BROWSERBASE_API_KEY else 'NOT configured'}")
 
     notified_listings = set()
     consecutive_errors = 0
