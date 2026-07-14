@@ -113,7 +113,7 @@ def notify(message: str, live_url: str = ""):
             f"https://ntfy.sh/{NTFY_TOPIC}",
             data=message.encode("utf-8"),
             headers={
-                "Title": "🎟️ Ticket available — open to pay!",
+                "Title": "Ticket available - open to pay!",
                 "Priority": "urgent",
                 "Tags": "rotating_light,ticket",
                 "Click": click_url,
