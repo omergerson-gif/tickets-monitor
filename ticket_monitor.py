@@ -1,19 +1,28 @@
 """
-Paylogic Resale Ticket Monitor — Railway script
-=================================================
-Polls the Paylogic resale API. When a ticket listing appears, it sends
-a ntfy.sh notification containing the direct buy URL.
+Paylogic Resale Ticket Monitor — Railway script (with Browserbase)
+===================================================================
+Polls the Paylogic resale API. When a ticket listing appears:
+  1. Creates a Browserbase cloud browser session
+  2. Navigates to the listing page and clicks Buy automatically
+  3. Sends you the live session URL via ntfy so you can take over and pay
+     from any device (phone, laptop) — just open the link and enter your card
 
-The local_buyer.py script on your Mac picks up that notification,
-opens the URL in your browser, and plays a sound — so you just click Pay.
+No local script needed. Everything runs on Railway.
 
 Dependencies:
-    pip install requests
+    pip install requests playwright
 
-Railway env variables to set:
-    NTFY_TOPIC      e.g. "omer-ticket-alert"  (pick any unique name)
-    TICKET_TYPES    optional, comma-separated filter e.g. "Regular Entrance Ticket"
-    POLL_INTERVAL   optional, default 3 (seconds)
+Browserbase setup (free tier: 100 min/month):
+    1. Sign up at https://www.browserbase.com
+    2. Get your API Key and Project ID from the dashboard
+    3. Set them as Railway env variables (see CONFIG below)
+
+Railway env variables:
+    BROWSERBASE_API_KEY     from browserbase.com dashboard
+    BROWSERBASE_PROJECT_ID  from browserbase.com dashboard
+    NTFY_TOPIC              e.g. "omer-ticket-alert"
+    TICKET_TYPES            optional, comma-separated e.g. "Regular Entrance Ticket"
+    POLL_INTERVAL           optional, default 1 (seconds)
 """
 
 import os
@@ -23,15 +32,26 @@ from datetime import datetime
 
 # ─── CONFIG ────────────────────────────────────────────────────────────────────
 
-RESALE_PAGE_URL  = "https://resale.paylogic.com/4f4cb390559b41f49892d0a3214d067d/"
-RESALE_API_URL   = "https://shopping-api.paylogic.com/resale/4f4cb390559b41f49892d0a3214d067d"
-SALE_ID          = "4f4cb390559b41f49892d0a3214d067d"
+RESALE_PAGE_URL = "https://resale.paylogic.com/4f4cb390559b41f49892d0a3214d067d/"
+RESALE_API_URL  = "https://shopping-api.paylogic.com/resale/4f4cb390559b41f49892d0a3214d067d"
+SALE_ID         = "4f4cb390559b41f49892d0a3214d067d"
 
 _ticket_types_env = os.environ.get("TICKET_TYPES", "")
 TICKET_TYPES = [t.strip() for t in _ticket_types_env.split(",") if t.strip()]
 
-POLL_INTERVAL = int(os.environ.get("POLL_INTERVAL", "1"))
-NTFY_TOPIC    = os.environ.get("NTFY_TOPIC", "omer-ticket-alert")
+POLL_INTERVAL          = int(os.environ.get("POLL_INTERVAL", "1"))
+NTFY_TOPIC             = os.environ.get("NTFY_TOPIC", "")
+BROWSERBASE_API_KEY    = os.environ.get("BROWSERBASE_API_KEY", "")
+BROWSERBASE_PROJECT_ID = os.environ.get("BROWSERBASE_PROJECT_ID", "")
+
+BUY_BUTTON_SELECTORS = [
+    "button:has-text('Buy')",
+    "button:has-text('Kopen')",
+    "a:has-text('Buy')",
+    ".btn-primary",
+    "[data-testid='buy-button']",
+    "button[type='submit']",
+]
 
 # ───────────────────────────────────────────────────────────────────────────────
 
@@ -41,9 +61,6 @@ def log(msg):
 
 
 def get_product_url(listing: dict) -> str:
-    """Constructs the frontend buy URL for a listing."""
-    # Try to get product UID from the listing's self link
-    # e.g. https://shopping-api.paylogic.com/products/ea796abf4e194323b32120dae681165c
     try:
         product_href = listing.get("_links", {}).get("shop:product", {}).get("href", "")
         if product_href:
@@ -73,38 +90,118 @@ def check_listings() -> list:
     return listings
 
 
-def notify(listing: dict):
+def create_browserbase_session() -> tuple[str, str]:
+    """Creates a Browserbase session. Returns (session_id, live_url)."""
+    r = requests.post(
+        "https://www.browserbase.com/v1/sessions",
+        headers={"X-BB-API-Key": BROWSERBASE_API_KEY},
+        json={"projectId": BROWSERBASE_PROJECT_ID},
+        timeout=15,
+    )
+    r.raise_for_status()
+    session = r.json()
+    session_id = session["id"]
+    live_url = f"https://www.browserbase.com/sessions/{session_id}"
+    return session_id, live_url
+
+
+def notify(message: str, live_url: str = ""):
     if not NTFY_TOPIC:
-        log("ntfy not configured — skipping notification.")
+        log("ntfy not configured — skipping.")
         return
-
-    name  = listing.get("name", "Unknown ticket")
-    price = listing.get("price", "?")
-    url   = get_product_url(listing)
-
+    click_url = live_url or RESALE_PAGE_URL
     try:
         requests.post(
             f"https://ntfy.sh/{NTFY_TOPIC}",
-            data=url.encode("utf-8"),          # message body = the buy URL
+            data=message.encode("utf-8"),
             headers={
-                "Title": f"🎟️ Ticket available: {name}",
+                "Title": "🎟️ Ticket available — open to pay!",
                 "Priority": "urgent",
                 "Tags": "rotating_light,ticket",
-                "Click": url,                  # tapping the phone notification opens the URL
+                "Click": click_url,
             },
             timeout=10,
         )
-        log(f"ntfy sent → {url}")
+        log(f"ntfy sent → {click_url}")
     except Exception as e:
         log(f"ntfy failed: {e}")
+
+
+def run_purchase(listing_url: str):
+    from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+
+    if not BROWSERBASE_API_KEY or not BROWSERBASE_PROJECT_ID:
+        log("Browserbase not configured — sending URL only.")
+        notify(f"Ticket found! Open to buy: {listing_url}", listing_url)
+        return
+
+    log("Creating Browserbase session...")
+    try:
+        session_id, live_url = create_browserbase_session()
+        log(f"Session live at: {live_url}")
+    except Exception as e:
+        log(f"Browserbase session failed: {e} — falling back to URL notify.")
+        notify(f"Ticket found! Open to buy: {listing_url}", listing_url)
+        return
+
+    # Send the live URL immediately so you can watch/take over
+    notify(
+        f"Browser is opening the buy page. Tap to take over and pay.",
+        live_url,
+    )
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.connect_over_cdp(
+                f"wss://connect.browserbase.com?apiKey={BROWSERBASE_API_KEY}&sessionId={session_id}"
+            )
+            context = browser.contexts[0]
+            page = context.pages[0]
+
+            # Navigate to the listing page
+            page.goto(listing_url, wait_until="networkidle", timeout=15000)
+            log("✓ Loaded listing page")
+
+            # Click Buy
+            clicked = False
+            for selector in BUY_BUTTON_SELECTORS:
+                try:
+                    page.wait_for_selector(selector, timeout=3000)
+                    page.click(selector)
+                    log(f"✓ Clicked buy button ({selector})")
+                    clicked = True
+                    break
+                except PlaywrightTimeout:
+                    continue
+
+            if not clicked:
+                log("⚠️  Buy button not found — you're on the listing page in the live session.")
+
+            # Try to proceed to cart
+            try:
+                page.wait_for_selector("a[href*='shopping-cart']", timeout=4000)
+                page.click("a[href*='shopping-cart']")
+                log("✓ Proceeded to shopping cart")
+            except PlaywrightTimeout:
+                pass
+
+            log("✓ Browser is on payment page. Open the live URL to complete checkout.")
+
+            # Keep session alive for 5 minutes for you to complete payment
+            time.sleep(300)
+            browser.close()
+
+    except Exception as e:
+        log(f"Browser automation error: {e}")
 
 
 def main():
     log(f"Monitoring started. Poll interval: {POLL_INTERVAL}s")
     log(f"Ticket filter: {TICKET_TYPES or 'ANY'}")
     log(f"ntfy topic: {NTFY_TOPIC or 'NOT SET'}")
+    log(f"Browserbase: {'configured' if BROWSERBASE_API_KEY else 'NOT configured'}")
 
-    notified_listings = set()   # avoid re-notifying the same listing
+    notified_listings = set()
     consecutive_errors = 0
 
     while True:
@@ -117,8 +214,9 @@ def main():
             if new:
                 for listing in new:
                     log(f"🎟️  FOUND: {listing.get('name')} | {listing.get('price')}")
-                    notify(listing)
                     notified_listings.add(listing.get("uid"))
+                    listing_url = get_product_url(listing)
+                    run_purchase(listing_url)
             else:
                 log(f"No tickets. Next check in {POLL_INTERVAL}s...")
 
