@@ -142,12 +142,6 @@ def run_purchase(listing_url: str):
         notify(f"Ticket found! Open to buy: {listing_url}", listing_url)
         return
 
-    # Send the live URL immediately so you can watch/take over
-    notify(
-        f"Browser is opening the buy page. Tap to take over and pay.",
-        live_url,
-    )
-
     try:
         with sync_playwright() as p:
             browser = p.chromium.connect_over_cdp(
@@ -173,24 +167,31 @@ def run_purchase(listing_url: str):
                     continue
 
             if not clicked:
-                log("⚠️  Buy button not found — you're on the listing page in the live session.")
+                log("⚠️  Buy button not found — sending listing URL instead.")
+                notify("Ticket found! Open to buy:", listing_url)
+                browser.close()
+                return
 
-            # Try to proceed to cart
+            # Navigate to cart and capture the checkout URL
             try:
                 page.wait_for_selector("a[href*='shopping-cart']", timeout=4000)
                 page.click("a[href*='shopping-cart']")
-                log("✓ Proceeded to shopping cart")
+                page.wait_for_load_state("networkidle", timeout=8000)
             except PlaywrightTimeout:
                 pass
 
-            log("✓ Browser is on payment page. Open the live URL to complete checkout.")
+            checkout_url = page.url
+            log(f"✓ Checkout URL: {checkout_url}")
 
-            # Keep session alive for 5 minutes for you to complete payment
-            time.sleep(300)
+            # Send the checkout URL — user opens it in their own browser to pay
+            notify("Ticket in cart! Open to pay:", checkout_url)
+            log("ntfy sent with checkout URL. Closing Browserbase session.")
+
             browser.close()
 
     except Exception as e:
         log(f"Browser automation error: {e}")
+        notify("Ticket found but automation failed. Buy manually:", listing_url)
 
 
 def main():
