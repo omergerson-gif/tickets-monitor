@@ -77,31 +77,14 @@ def check_listings() -> list:
     )
     r.raise_for_status()
     data = r.json()
-
-    # Log all embedded keys so we can see the exact API structure when listings exist
     embedded = data.get("_embedded", {})
-    embedded_keys = list(embedded.keys())
-    log(f"API keys: {embedded_keys}")
+    products = embedded.get("shop:product", [])
 
-    # Log raw counts for every key that looks like a listing
-    for key in embedded_keys:
-        val = embedded[key]
-        if isinstance(val, list):
-            log(f"  {key}: {len(val)} item(s)")
-            if val:
-                log(f"  {key}[0] sample: {str(val[0])[:300]}")
+    # Log full first product so we can find the availability field
+    if products:
+        log(f"Full product[0]: {str(products[0])}")
 
-    listings = embedded.get("shop:resale_listing", [])
-
-    if TICKET_TYPES:
-        before = len(listings)
-        listings = [
-            l for l in listings
-            if any(t.lower() in str(l.get("name", "")).lower() for t in TICKET_TYPES)
-        ]
-        log(f"After TICKET_TYPES filter: {len(listings)}/{before} listings match")
-
-    return listings
+    return []  # temporarily returning empty until we identify the correct availability field
 
 
 def create_browserbase_session() -> tuple[str, str]:
