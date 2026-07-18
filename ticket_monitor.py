@@ -27,18 +27,19 @@ Railway env variables:
 import os
 import time
 import requests
+import httpx
 from datetime import datetime
 
 # ─── CONFIG ────────────────────────────────────────────────────────────────────
 
 RESALE_PAGE_URL = "https://resale.paylogic.com/4f4cb390559b41f49892d0a3214d067d/"
-# Use the protected subdomain — same one the browser uses. The unprotected
-# shopping-api.paylogic.com returns 421 Misdirected Request from server IPs
-# due to HTTP/2 SNI issues with the requests library.
-RESALE_API_URL  = "https://shopping-api.protected.paylogic.com/resale/4f4cb390559b41f49892d0a3214d067d"
+# shopping-api.paylogic.com requires HTTP/2 (returns 421 with HTTP/1.1 requests library).
+# shopping-api.protected.paylogic.com requires browser cookies (returns 403 from Railway).
+# Solution: use httpx with HTTP/2 support for the polling request.
+RESALE_API_URL  = "https://shopping-api.paylogic.com/resale/4f4cb390559b41f49892d0a3214d067d"
 SALE_ID         = "4f4cb390559b41f49892d0a3214d067d"
 
-# Browser-like headers to avoid bot detection during high-traffic sale periods
+# Browser-like headers
 API_HEADERS = {
     "Accept": "application/json",
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
@@ -74,11 +75,9 @@ def check_listings() -> list:
     Polls the resale API. Returns a list of available listings when tickets are on sale.
     Uses top-level statistics.available to detect availability (fast, one request).
     """
-    r = requests.get(
-        RESALE_API_URL,
-        headers=API_HEADERS,
-        timeout=12,
-    )
+    # Use httpx with HTTP/2 — shopping-api.paylogic.com requires HTTP/2
+    with httpx.Client(http2=True, timeout=12) as client:
+        r = client.get(RESALE_API_URL, headers=API_HEADERS)
     r.raise_for_status()
     data = r.json()
 
@@ -272,7 +271,7 @@ def main():
             else:
                 log(f"No tickets. Next check in {POLL_INTERVAL}s...")
 
-        except requests.RequestException as e:
+        except (requests.RequestException, httpx.HTTPError) as e:
             consecutive_errors += 1
             log(f"Request error ({consecutive_errors}): {e}")
             # Never exit — just back off slightly and keep monitoring.
