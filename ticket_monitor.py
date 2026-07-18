@@ -27,8 +27,12 @@ Railway env variables:
 import os
 import time
 import requests
-import httpx
 from datetime import datetime
+try:
+    from curl_cffi import requests as cf_requests
+    USE_CURL_CFFI = True
+except ImportError:
+    USE_CURL_CFFI = False
 
 # ─── CONFIG ────────────────────────────────────────────────────────────────────
 
@@ -75,9 +79,13 @@ def check_listings() -> list:
     Polls the resale API. Returns a list of available listings when tickets are on sale.
     Uses top-level statistics.available to detect availability (fast, one request).
     """
-    # Use httpx with HTTP/2 — shopping-api.paylogic.com requires HTTP/2
-    with httpx.Client(http2=True, timeout=12) as client:
-        r = client.get(RESALE_API_URL, headers=API_HEADERS)
+    # curl_cffi impersonates Chrome's TLS fingerprint, bypassing Cloudflare bot detection.
+    # Falls back to plain requests if not installed (will likely 421 in that case).
+    if USE_CURL_CFFI:
+        r = cf_requests.get(RESALE_API_URL, headers=API_HEADERS, impersonate="chrome120", timeout=12)
+    else:
+        log("WARNING: curl_cffi not available, falling back to requests (may 421)")
+        r = requests.get(RESALE_API_URL, headers=API_HEADERS, timeout=12)
     r.raise_for_status()
     data = r.json()
 
@@ -271,7 +279,7 @@ def main():
             else:
                 log(f"No tickets. Next check in {POLL_INTERVAL}s...")
 
-        except (requests.RequestException, httpx.HTTPError) as e:
+        except Exception as e:
             consecutive_errors += 1
             log(f"Request error ({consecutive_errors}): {e}")
             # Never exit — just back off slightly and keep monitoring.
