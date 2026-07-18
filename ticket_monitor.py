@@ -32,8 +32,19 @@ from datetime import datetime
 # ─── CONFIG ────────────────────────────────────────────────────────────────────
 
 RESALE_PAGE_URL = "https://resale.paylogic.com/4f4cb390559b41f49892d0a3214d067d/"
-RESALE_API_URL  = "https://shopping-api.paylogic.com/resale/4f4cb390559b41f49892d0a3214d067d"
+# Use the protected subdomain — same one the browser uses. The unprotected
+# shopping-api.paylogic.com returns 421 Misdirected Request from server IPs
+# due to HTTP/2 SNI issues with the requests library.
+RESALE_API_URL  = "https://shopping-api.protected.paylogic.com/resale/4f4cb390559b41f49892d0a3214d067d"
 SALE_ID         = "4f4cb390559b41f49892d0a3214d067d"
+
+# Browser-like headers to avoid bot detection during high-traffic sale periods
+API_HEADERS = {
+    "Accept": "application/json",
+    "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36",
+    "Referer": "https://resale.paylogic.com/",
+    "Origin": "https://resale.paylogic.com",
+}
 
 _ticket_types_env = os.environ.get("TICKET_TYPES", "")
 TICKET_TYPES = [t.strip() for t in _ticket_types_env.split(",") if t.strip()]
@@ -65,8 +76,8 @@ def check_listings() -> list:
     """
     r = requests.get(
         RESALE_API_URL,
-        headers={"Accept": "application/json"},
-        timeout=8,
+        headers=API_HEADERS,
+        timeout=12,
     )
     r.raise_for_status()
     data = r.json()
@@ -264,9 +275,12 @@ def main():
         except requests.RequestException as e:
             consecutive_errors += 1
             log(f"Request error ({consecutive_errors}): {e}")
-            if consecutive_errors >= 10:
-                log("Too many errors — exiting.")
-                break
+            # Never exit — just back off slightly and keep monitoring.
+            # The API can go unreachable during high-traffic sale periods;
+            # stopping then would be the worst time to stop.
+            error_sleep = min(consecutive_errors * 2, 15)
+            time.sleep(error_sleep)
+            continue
 
         except KeyboardInterrupt:
             log("Stopped.")
